@@ -75,7 +75,9 @@ Pi installs this fork from GitHub. In `~/.pi/agent/settings.json`:
 ```
 
 `dist/` is gitignored; the package's `prepare` script runs `tsup` when Pi
-installs dependencies in its managed checkout. `pi update --extensions` pulls
+installs dependencies in its managed checkout. `.npmrc` sets `legacy-peer-deps`
+because npm 10 crashes (`reading 'edgesOut'`) resolving the dev peer set of a git
+install. `pi update --extensions` pulls
 new commits from the fork's `main`. It does not receive npm updates.
 
 To develop, from a clone of the fork:
