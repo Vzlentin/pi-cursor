@@ -5,22 +5,25 @@
  * on the same stream or the server parks waiting:
  *   - `kvServerMessage`   blob get/set against the local blob store
  *   - `execServerMessage`  tool execution — MCP calls are handed to the caller;
- *     native local tools are rejected with Pi MCP guidance; fetch runs on this stream
+ *     Cursor-native local tools (read/write/delete/ls/grep/shell) become Pi tool
+ *     calls (./native-pi-tools.ts); fetch and diagnostics run on this stream
  *   - `interactionQuery`  permission prompts, answered by ./interaction-query.ts
  *
  * Every handler returns whether it made forward progress, which is what feeds
  * the idle watchdog — see `processServerMessage` for the exact contract.
  */
-import { create, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
+import { create, toBinary } from "@bufbuild/protobuf";
 import { pathToFileURL } from "node:url";
 
 import {
   AgentClientMessageSchema,
+  BackgroundShellSpawnResultSchema,
   ComputerUseErrorSchema,
   ComputerUseResultSchema,
   ConversationStateStructureSchema,
   ExecClientControlMessageSchema,
   ExecClientMessageSchema,
+  ExecClientStreamCloseSchema,
   ExecClientThrowSchema,
   GetBlobResultSchema,
   KvClientMessageSchema,
@@ -39,12 +42,15 @@ import {
   SetBlobResultSchema,
   SetupVmEnvironmentResultSchema,
   SetupVmEnvironmentSuccessSchema,
+  ShellRejectedSchema,
   StartGrindExecutionResultSchema,
   StartGrindExecutionSuccessSchema,
   StartGrindPlanningResultSchema,
   StartGrindPlanningSuccessSchema,
   TruncatedToolCallResultSchema,
   TruncatedToolCallSuccessSchema,
+  WriteShellStdinErrorSchema,
+  WriteShellStdinResultSchema,
   type AgentServerMessage,
   type ConversationStateStructure,
   type ExecServerMessage,
@@ -57,13 +63,17 @@ import { debugLog, lifecycleLog } from "./debug-log.js";
 import { recordDriftSignal, recordUnknownFields } from "./drift.js";
 import { dispatchNativeExec, type NativeExecFrame } from "./exec-native.js";
 import { handleInteractionQuery } from "./interaction-query.js";
-import { decodeMcpArgsMap } from "./request-build.js";
 import {
-  availableToolNamesFor,
-  isLocalToolExec,
-  localToolCandidates,
-  nativeToolRejectReason,
-} from "./local-tool-policy.js";
+  createNativeCallTracker,
+  nativeResultReply,
+  noteCursorToolCall,
+  PI_ROUTED_EXEC_CASES,
+  planNativePiRoute,
+  resolveNativeToolRouting,
+  type NativeCallTracker,
+  type NativeExecReply,
+} from "./native-pi-tools.js";
+import { decodeMcpArgsMap } from "./request-build.js";
 import { stripCursorMcpToolName } from "./root-prompt.js";
 import {
   interactionUpdateProgress,
@@ -73,7 +83,7 @@ import {
   type StreamProgress,
 } from "./tuning.js";
 import { conversationStates, markBlobMiss, trimBlobStore } from "./session-state.js";
-import type { PendingExec, StreamState } from "./types.js";
+import type { ParsedToolResult, PendingExec, StreamState } from "./types.js";
 import { setLastStreamEvent } from "../diagnostics/diagnostics.js";
 
 /**
@@ -158,6 +168,12 @@ export function processServerMessage(
       state.turnEnded = true;
       return "work";
     }
+    if (
+      state.nativeCalls &&
+      (updateCase === "partialToolCall" || updateCase === "toolCallStarted")
+    ) {
+      noteCursorToolCall(state.nativeCalls, update.message.value);
+    }
     // Remaining cases (heartbeat, toolCallStarted, partialToolCall, ...) are already
     // classified by interactionUpdateProgress; reuse it rather than keeping a second list.
     const progress = interactionUpdateProgress(updateCase);
@@ -175,15 +191,14 @@ export function processServerMessage(
   if (msgCase === "execServerMessage") {
     const execMsg = msg.message.value as ExecServerMessage;
     const execCase = (execMsg as { message?: { case?: string } }).message?.case;
-    const handled = handleExecMessage(execMsg, mcpTools, sendFrame, onMcpExec, onLocalWork);
-    if (execCase && isLocalToolExec(execCase)) {
-      state.localToolRejections = (state.localToolRejections ?? 0) + 1;
-      lifecycleLog("local_tool_rejected", {
-        execCase,
-        count: state.localToolRejections,
-        candidates: localToolCandidates(execCase, mcpTools),
-      });
-    }
+    const handled = handleExecMessage(
+      execMsg,
+      mcpTools,
+      sendFrame,
+      onMcpExec,
+      onLocalWork,
+      state.nativeCalls,
+    );
     // execServerMessage was previously invisible in the lifecycle log — the exact
     // blind spot behind unexplained mid-run stalls. Record the exec case and whether
     // we answered it, so a parked stream can be diagnosed from the sanitized log
@@ -363,17 +378,59 @@ function handleExecMessage(
   sendFrame: (data: Uint8Array) => void,
   onMcpExec: (exec: PendingExec) => void,
   onLocalWork?: (work: Promise<void>) => void,
+  nativeCalls?: NativeCallTracker,
 ): boolean {
-  return handleExecMessageInner(execMsg, mcpTools, sendFrame, onMcpExec, onLocalWork);
+  return handleExecMessageInner(execMsg, mcpTools, sendFrame, onMcpExec, onLocalWork, nativeCalls);
 }
 
-/** Routes Pi calls, rejects native local requests, and dispatches the remaining native handlers. */
+// mcpTools is fixed for the life of a stream but `mcpArgs` exec messages can arrive many times
+// per turn; cache the derived name list by array identity instead of rebuilding it every call.
+const availableToolNamesCache = new WeakMap<McpToolDefinition[], string[]>();
+
+function availableToolNamesFor(mcpTools: McpToolDefinition[]): string[] {
+  const cached = availableToolNamesCache.get(mcpTools);
+  if (cached) return cached;
+  const names = [...new Set(mcpTools.flatMap((tool) => [tool.toolName, tool.name]))].filter(
+    Boolean,
+  ) as string[];
+  availableToolNamesCache.set(mcpTools, names);
+  return names;
+}
+
+const NATIVE_EXEC_MCP_HINTS: Record<string, string[]> = {
+  readArgs: ["read", "Read"],
+  lsArgs: ["ls", "LS"],
+  grepArgs: ["grep", "Grep"],
+  writeArgs: ["write", "edit", "Edit"],
+  deleteArgs: ["bash", "edit", "Edit"],
+  shellArgs: ["bash"],
+  shellStreamArgs: ["bash"],
+  backgroundShellSpawnArgs: ["bash"],
+  writeShellStdinArgs: ["bash"],
+  fetchArgs: ["web_search", "fetch"],
+};
+
+function nativeToolRejectReason(execCase: string, mcpTools: McpToolDefinition[]): string {
+  const available = availableToolNamesFor(mcpTools);
+  const candidates = (NATIVE_EXEC_MCP_HINTS[execCase] ?? []).filter((name) =>
+    available.includes(name),
+  );
+  if (candidates.length > 0) {
+    return (
+      `This native Cursor tool is not available in Pi. ` +
+      `Call the MCP tool "${candidates[0]}" with the same arguments instead.`
+    );
+  }
+  return "This native Cursor tool is not available in Pi. Use the MCP tools provided instead.";
+}
+
 function handleExecMessageInner(
   execMsg: ExecServerMessage,
   mcpTools: McpToolDefinition[],
   sendFrame: (data: Uint8Array) => void,
   onMcpExec: (exec: PendingExec) => void,
   onLocalWork?: (work: Promise<void>) => void,
+  nativeCalls: NativeCallTracker = createNativeCallTracker(),
 ): boolean {
   const execCase = (execMsg as any).message.case;
   const REJECT_REASON = nativeToolRejectReason(execCase ?? "", mcpTools);
@@ -438,62 +495,28 @@ function handleExecMessageInner(
     return true;
   }
 
-  // Build the typed rejection once; the envelope creates nested protobuf messages.
-  const request = execMsg.message;
-  let rejection: MessageInitShape<typeof ExecClientMessageSchema>["message"];
-  switch (request.case) {
-    case "readArgs":
-    case "lsArgs":
-    case "writeArgs":
-    case "deleteArgs": {
-      const resultCase = {
-        readArgs: "readResult",
-        lsArgs: "lsResult",
-        writeArgs: "writeResult",
-        deleteArgs: "deleteResult",
-      } as const;
-      rejection = {
-        case: resultCase[request.case],
-        value: {
-          result: { case: "rejected", value: { path: request.value.path, reason: REJECT_REASON } },
-        },
-      };
-      break;
+  const nativeArgs = ((execMsg as any).message?.value ?? {}) as Record<string, unknown>;
+  if (PI_ROUTED_EXEC_CASES.has(execCase ?? "") && resolveNativeToolRouting() === "pi") {
+    const decision = planNativePiRoute(
+      execCase,
+      nativeArgs,
+      availableToolNamesFor(mcpTools),
+      nativeCalls,
+    );
+    if (decision.kind === "respond") {
+      sendNativeExecReply(execMsg, decision.reply, sendFrame);
+      return true;
     }
-    case "grepArgs":
-    case "writeShellStdinArgs":
-      rejection = {
-        case: request.case === "grepArgs" ? "grepResult" : "writeShellStdinResult",
-        value: { result: { case: "error", value: { error: REJECT_REASON } } },
-      };
-      break;
-    case "shellArgs":
-    case "shellStreamArgs":
-    case "backgroundShellSpawnArgs": {
-      const result = {
-        case: "rejected" as const,
-        value: {
-          command: request.value.command,
-          workingDirectory: request.value.workingDirectory,
-          reason: REJECT_REASON,
-          isReadonly: false,
-        },
-      };
-      rejection =
-        request.case === "shellStreamArgs"
-          ? { case: "shellStream", value: { event: result } }
-          : {
-              case: request.case === "shellArgs" ? "shellResult" : "backgroundShellSpawnResult",
-              value: { result },
-            };
-      break;
-    }
-  }
-  if (rejection?.case) {
-    sendExecResult(execMsg, rejection.case, rejection.value, sendFrame);
+    onMcpExec({
+      execId: (execMsg as any).execId,
+      execMsgId: (execMsg as any).id,
+      toolCallId: decision.toolCallId,
+      toolName: decision.toolName,
+      decodedArgs: JSON.stringify(decision.args),
+      native: decision.binding,
+    });
     return true;
   }
-  const nativeArgs = ((execMsg as any).message?.value ?? {}) as Record<string, unknown>;
   const native = dispatchNativeExec(execCase ?? "", nativeArgs);
   if (native?.kind === "sync") {
     sendNativeFrame(execMsg, native.frame, sendFrame);
@@ -509,7 +532,51 @@ function handleExecMessageInner(
     onLocalWork?.(work);
     return true;
   }
+  if (native?.kind === "stream") {
+    const work = native
+      .run((frame) => sendNativeFrame(execMsg, frame, sendFrame))
+      .then(() => sendExecStreamClose(execMsg.id, sendFrame))
+      .catch((error) => {
+        sendExecThrow(execMsg, error instanceof Error ? error.message : String(error), sendFrame);
+      });
+    onLocalWork?.(work);
+    return true;
+  }
 
+  if (execCase === "backgroundShellSpawnArgs") {
+    const args = (execMsg as any).message.value;
+    sendExecResult(
+      execMsg,
+      "backgroundShellSpawnResult",
+      create(BackgroundShellSpawnResultSchema, {
+        result: {
+          case: "rejected",
+          value: create(ShellRejectedSchema, {
+            command: args.command ?? "",
+            workingDirectory: args.workingDirectory ?? "",
+            reason: REJECT_REASON,
+            isReadonly: false,
+          }),
+        },
+      }),
+      sendFrame,
+    );
+    return true;
+  }
+  if (execCase === "writeShellStdinArgs") {
+    sendExecResult(
+      execMsg,
+      "writeShellStdinResult",
+      create(WriteShellStdinResultSchema, {
+        result: {
+          case: "error",
+          value: create(WriteShellStdinErrorSchema, { error: REJECT_REASON }),
+        },
+      }),
+      sendFrame,
+    );
+    return true;
+  }
   if (execCase === "readMcpResourceExecArgs") {
     const args = (execMsg as any).message.value;
     sendExecResult(
@@ -689,15 +756,20 @@ function sendExecThrow(
   sendFrame(frameConnectMessage(toBinary(AgentClientMessageSchema, clientMessage)));
 }
 
+interface ExecTarget {
+  id: number;
+  execId: string;
+}
+
 function sendExecResult(
-  execMsg: ExecServerMessage,
+  target: ExecTarget,
   messageCase: string,
   value: unknown,
   sendFrame: (data: Uint8Array) => void,
 ): void {
   const execClientMessage = create(ExecClientMessageSchema, {
-    id: (execMsg as any).id,
-    execId: (execMsg as any).execId,
+    id: target.id,
+    execId: target.execId,
     message: { case: messageCase as any, value: value as any },
   });
   const clientMessage = create(AgentClientMessageSchema, {
@@ -707,11 +779,48 @@ function sendExecResult(
 }
 
 function sendNativeFrame(
-  execMsg: ExecServerMessage,
+  target: ExecTarget,
   frame: NativeExecFrame,
   sendFrame: (data: Uint8Array) => void,
 ): void {
-  sendExecResult(execMsg, frame.resultCase, frame.value, sendFrame);
+  sendExecResult(target, frame.resultCase, frame.value, sendFrame);
+}
+
+/**
+ * A shell exit event is data, not the end of the exec RPC. Cursor's client
+ * closes a streaming exec explicitly after its final result.
+ */
+function sendExecStreamClose(id: number, sendFrame: (data: Uint8Array) => void): void {
+  const control = create(ExecClientControlMessageSchema, {
+    message: { case: "streamClose", value: create(ExecClientStreamCloseSchema, { id }) },
+  });
+  const message = create(AgentClientMessageSchema, {
+    message: { case: "execClientControlMessage", value: control },
+  });
+  sendFrame(frameConnectMessage(toBinary(AgentClientMessageSchema, message)));
+}
+
+function sendNativeExecReply(
+  target: ExecTarget,
+  reply: NativeExecReply,
+  sendFrame: (data: Uint8Array) => void,
+): void {
+  for (const frame of reply.frames) sendNativeFrame(target, frame, sendFrame);
+  if (reply.closeStream) sendExecStreamClose(target.id, sendFrame);
+}
+
+/** Answers a native exec that ran as a Pi tool call with Pi's result. */
+export function sendPiResultForNativeExec(
+  exec: PendingExec,
+  result: ParsedToolResult,
+  sendFrame: (data: Uint8Array) => void,
+): void {
+  if (!exec.native) throw new Error(`Pending exec ${exec.toolCallId} is not a native exec`);
+  sendNativeExecReply(
+    { id: exec.execMsgId, execId: exec.execId },
+    nativeResultReply(exec.native, result),
+    sendFrame,
+  );
 }
 
 export const __testInternals = {

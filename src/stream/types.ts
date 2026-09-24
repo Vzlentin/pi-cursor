@@ -10,6 +10,7 @@ import type { BridgeHandle } from "../client/bridge.js";
 import type { CursorModelParameter } from "../client/cursor-wire.js";
 import type { McpToolDefinition } from "../proto/agent_pb.js";
 import type { CursorNativeModelRouting } from "./model-routing.js";
+import type { NativeCallTracker, NativeExecBinding } from "./native-pi-tools.js";
 
 // ── OpenAI-shaped request surface ──
 //
@@ -157,6 +158,8 @@ export interface PendingExec {
   toolCallId: string;
   toolName: string;
   decodedArgs: string;
+  /** Set when a Cursor-native exec runs as this Pi tool call; its result is sent back natively. */
+  native?: NativeExecBinding;
 }
 
 /**
@@ -220,10 +223,10 @@ export interface StoredConversation {
 }
 
 export interface StreamState {
-  /** Rejections since the last Pi result. Stop is deferred while Pi calls await results. */
-  localToolRejections?: number;
   toolCallIndex: number;
   pendingExecs: PendingExec[];
+  /** Per-bridge record of Cursor tool calls, shared across tool pauses. */
+  nativeCalls?: NativeCallTracker;
   outputTokens: number;
   totalTokens: number;
   /** Input/context tokens from the last checkpoint `tokenDetails.usedTokens`. */
@@ -273,8 +276,6 @@ export interface IdleRestartContext {
 }
 
 export interface StreamIdleRetryController {
-  /** Preserve the rejection budget across transport retries. */
-  localToolRejections?: number;
   currentAttempt: number;
   maxRetries: number;
   recoverBeforeRetry?: boolean;
@@ -282,8 +283,6 @@ export interface StreamIdleRetryController {
 }
 
 export interface NativeStreamAttemptInput {
-  /** Carry the budget when a tool continuation rebuilds its transport. */
-  localToolRejections?: number;
   accessToken: string;
   requestBytes: Uint8Array;
   blobStore: Map<string, Uint8Array>;
