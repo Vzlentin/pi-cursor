@@ -19,22 +19,17 @@
  *     `tool-result` content parts, with MCP tool names in Cursor's
  *     `mcp_<provider>_<tool>` form.
  *
- * Only used when a request is built without an upstream checkpoint. With a
- * checkpoint the server already holds the rendered history and appends to it.
+ * Every new Run overlays this prompt, including checkpoint recovery. Callers
+ * must include the active turn when continuing interrupted work.
  */
 import { createHash } from "node:crypto";
 
 import type { ParsedTurn, ParsedTurnStep, ParsedToolCallStep } from "./types.js";
+import { PI_QUESTION_POLICY } from "./interaction-policy.js";
+import { normalizeToolResultForTransport } from "./tool-result.js";
 
 /** Provider identifier used when registering Pi's tools as Cursor MCP tools. */
 const MCP_PROVIDER_IDENTIFIER = "pi";
-
-/**
- * Replayed tool results are already bounded by `normalizeToolResultForTransport`
- * on the turn-structure path. Bound them again here so a long history cannot
- * blow the prompt on its own.
- */
-export const MAX_REPLAYED_TOOL_RESULT_CHARS = 20_000;
 
 export interface RootPromptTextPart {
   type: "text";
@@ -83,11 +78,6 @@ export function stripCursorMcpToolName(toolName: string): string {
   return name.startsWith(prefix) ? name.slice(prefix.length) : name;
 }
 
-function truncateReplayedResult(text: string): string {
-  if (text.length <= MAX_REPLAYED_TOOL_RESULT_CHARS) return text;
-  return `${text.slice(0, MAX_REPLAYED_TOOL_RESULT_CHARS)}\n\n[pi-cursor truncated this replayed tool result.]`;
-}
-
 /**
  * Pi's system prompt, framed the way Cursor frames its own instructions.
  * A `system` role entry here is discarded by the server.
@@ -95,7 +85,9 @@ function truncateReplayedResult(text: string): string {
 export function systemPromptRootMessage(systemPrompt: string): RootPromptMessage {
   return {
     role: "user",
-    content: [{ type: "text", text: `<rules>\n${systemPrompt}\n</rules>` }],
+    content: [
+      { type: "text", text: `<rules>\n${systemPrompt}\n\n${PI_QUESTION_POLICY}\n</rules>` },
+    ],
   };
 }
 
@@ -142,6 +134,9 @@ export function turnRootMessages(turn: ParsedTurn): RootPromptMessage[] {
       continue;
     }
     if (!isToolCallStep(step)) continue;
+    // A tool-only next round still follows the previous result. Grouping all
+    // calls before all results made dependent calls look like a parallel batch.
+    if (pendingResults.length > 0) flushAssistant();
     const toolName = cursorMcpToolName(step.toolName);
     assistantContent.push({
       type: "tool-call",
@@ -157,7 +152,9 @@ export function turnRootMessages(turn: ParsedTurn): RootPromptMessage[] {
         type: "tool-result",
         toolCallId: step.toolCallId,
         toolName,
-        result: truncateReplayedResult(`${step.result.content}${imageSuffix}`),
+        // Recovery must not cut a fresh result to the old 20k history limit.
+        result: normalizeToolResultForTransport({ content: `${step.result.content}${imageSuffix}` })
+          .content,
         ...(step.result.isError ? { isError: true } : {}),
       });
     }
@@ -168,15 +165,14 @@ export function turnRootMessages(turn: ParsedTurn): RootPromptMessage[] {
 }
 
 /**
- * Full prompt history for a request built without an upstream checkpoint:
- * Pi's system prompt followed by every completed turn.
+ * Full prompt history for every new Run, with or without a checkpoint:
+ * Pi's system prompt followed by all supplied turns (including interrupted work).
  */
 export function buildRootPromptMessages(
   systemPrompt: string,
   turns: ParsedTurn[],
 ): RootPromptMessage[] {
-  const messages: RootPromptMessage[] = [];
-  if (systemPrompt.trim()) messages.push(systemPromptRootMessage(systemPrompt));
+  const messages: RootPromptMessage[] = [systemPromptRootMessage(systemPrompt)];
   for (const turn of turns) messages.push(...turnRootMessages(turn));
   return messages;
 }

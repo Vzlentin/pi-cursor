@@ -15,6 +15,11 @@ import type {
 
 export const DEFAULT_MIDPAUSE_REBUILD_MAX_AGE_MS = 15 * 60 * 1000;
 
+const TOOL_CONTINUATION_PROMPT =
+  "The tool results are recorded in the conversation above. Continue the existing user request " +
+  "from those results and the prior assistant work. This is a transport continuation, not a new " +
+  "task or a user cancellation. Do not repeat completed tool calls.";
+
 export type {
   ParsedImageContent,
   ParsedToolResult,
@@ -36,7 +41,10 @@ export type RecoveryDecision =
       checkpoint: Uint8Array;
       conversationId: string;
       blobStore: Map<string, Uint8Array>;
-      wrappedText: string;
+      completedTurns: ParsedTurn[];
+      inFlightTurn: ParsedTurn;
+      toolResults: ToolResultInfo[];
+      continuationText: string;
     }
   | {
       kind: "rebuild_full_history";
@@ -46,7 +54,7 @@ export type RecoveryDecision =
       inFlightTurn: ParsedTurn;
       toolResults: ToolResultInfo[];
       blobStore: Map<string, Uint8Array>;
-      wrappedText: string;
+      continuationText: string;
       rebuildReason: FullHistoryRebuildReason;
     }
   | {
@@ -277,6 +285,27 @@ export function stripInFlightResults(turn: ParsedTurn): ParsedTurn {
   };
 }
 
+/** Restore results as tool data, not a synthetic user message with orphaned calls. */
+function restoreInFlightResults(turn: ParsedTurn, results: ToolResultInfo[]): ParsedTurn {
+  const byId = new Map(results.map((result) => [result.toolCallId, result]));
+  return {
+    ...turn,
+    steps: turn.steps.map((step) => {
+      if (step.kind !== "toolCall") return step;
+      const result = byId.get(step.toolCallId);
+      if (!result) return step;
+      return {
+        ...step,
+        result: {
+          content: result.content,
+          isError: result.isError === true,
+          ...(result.images?.length ? { images: result.images.map(cloneParsedImage) } : {}),
+        },
+      };
+    }),
+  };
+}
+
 /**
  * A tool message with no `tool_call_id` parses to an empty id. Several of those in one turn look
  * like duplicates to the set validators and would fail an otherwise sound recovery, so they are
@@ -399,10 +428,10 @@ export function planFullHistoryRebuild(
     hadStoredCheckpoint,
     conversationId: input.stored.conversationId,
     completedTurns: input.completedTurns,
-    inFlightTurn: strippedInFlightTurn,
+    inFlightTurn: restoreInFlightResults(strippedInFlightTurn, input.toolResults),
     toolResults: input.toolResults,
     blobStore: input.stored.blobStore,
-    wrappedText: wrapRecoveredToolResults(input.toolResults),
+    continuationText: TOOL_CONTINUATION_PROMPT,
     rebuildReason,
   };
 }
@@ -462,12 +491,20 @@ export function planRecovery(input: PlanRecoveryInput): RecoveryDecision {
     return skipRecovery("pending_tool_call_mismatch", true, match.expected, match.received);
   }
 
+  // Request building replaces the checkpoint's prompt, so a checkpoint alone
+  // cannot recover the active request. Require and carry the same complete Pi
+  // transcript as the no-checkpoint path, including matched tool results.
+  const replay = tryRebuild("checkpoint_tool_mismatch");
+  if (replay.kind === "skip") return replay;
   return {
     kind: "recover",
     hadStoredCheckpoint: true,
     checkpoint: input.stored.checkpoint,
     conversationId: input.stored.conversationId,
     blobStore: input.stored.blobStore,
-    wrappedText: wrapRecoveredToolResults(input.toolResults),
+    completedTurns: replay.completedTurns,
+    inFlightTurn: replay.inFlightTurn,
+    toolResults: replay.toolResults,
+    continuationText: TOOL_CONTINUATION_PROMPT,
   };
 }

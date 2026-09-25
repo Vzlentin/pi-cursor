@@ -33,9 +33,20 @@ export function clientInFlightTurn(
 ): ParsedTurn {
   if (transcript.kind === "live") return wireCurrentTurn;
   const userImages = transcript.inFlightTurn.userImages ?? wireCurrentTurn.userImages;
+  const steps = [...transcript.inFlightTurn.steps];
+  for (const step of wireCurrentTurn.steps) {
+    const previous = steps.at(-1);
+    // Transport retries continue the same Pi text block. Preserve that shape
+    // for checkpoint fingerprints without mutating the pre-recovery snapshot.
+    if (step.kind === "assistantText" && previous?.kind === "assistantText") {
+      steps[steps.length - 1] = { kind: "assistantText", text: previous.text + step.text };
+    } else {
+      steps.push(step);
+    }
+  }
   const recovered: ParsedTurn = {
     userText: transcript.inFlightTurn.userText,
-    steps: [...transcript.inFlightTurn.steps, ...wireCurrentTurn.steps],
+    steps,
   };
   if (userImages?.length) recovered.userImages = userImages;
   return recovered;

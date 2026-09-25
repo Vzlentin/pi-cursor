@@ -60,8 +60,45 @@ describe("root prompt messages", () => {
     expect(JSON.stringify(rules)).toContain("PI SYSTEM PROMPT");
   });
 
-  it("omits the rules message when there is no system prompt", () => {
-    expect(buildRootPromptMessages("   ", [])).toHaveLength(0);
+  it("includes question capability guidance even without a Pi system prompt", () => {
+    const messages = buildRootPromptMessages("   ", []);
+    expect(messages).toHaveLength(1);
+    expect(JSON.stringify(messages)).toContain("AskUserQuestion/AskQuestion UI is unavailable");
+    expect(JSON.stringify(messages)).toContain("ask in ordinary assistant chat");
+  });
+
+  it("keeps tool-only rounds in causal order instead of moving results to the end", () => {
+    const messages = turnRootMessages({
+      userText: "read then edit",
+      steps: [
+        {
+          kind: "toolCall",
+          toolCallId: "read",
+          toolName: "read",
+          arguments: { path: "a.ts" },
+          result: { content: "original contents", isError: false },
+        },
+        { kind: "thinking", text: "Now edit what I read" },
+        {
+          kind: "toolCall",
+          toolCallId: "edit",
+          toolName: "edit",
+          arguments: { path: "a.ts" },
+          result: { content: "edited", isError: false },
+        },
+      ],
+    });
+    expect(messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "assistant",
+      "tool",
+    ]);
+    expect(messages[2]).toMatchObject({
+      content: [{ toolCallId: "read", result: "original contents" }],
+    });
+    expect(messages[3]).toMatchObject({ content: [{ toolCallId: "edit" }] });
   });
 
   it("renders a turn as user / assistant / tool messages and skips reasoning", () => {

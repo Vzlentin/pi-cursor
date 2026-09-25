@@ -70,7 +70,10 @@ describe("planRecovery", () => {
     expect(decision.kind).toBe("rebuild_full_history");
     if (decision.kind === "rebuild_full_history") {
       expect(decision.rebuildReason).toBe("no_checkpoint");
-      expect(decision.wrappedText).toContain("Recovered tool output");
+      expect(decision.continuationText).toContain("Continue the existing user request");
+      expect(decision.inFlightTurn.steps[0]).toMatchObject({
+        result: { content: "file contents" },
+      });
       expect(decision.toolResults).toEqual(toolResults);
     }
   });
@@ -170,8 +173,36 @@ describe("planRecovery", () => {
     expect(decision.kind).toBe("recover");
     if (decision.kind === "recover") {
       expect(decision.checkpoint).toBe(checkpoint);
-      expect(decision.wrappedText).toContain("t1");
+      expect(decision.continuationText).toContain("transport continuation");
+      expect(decision.completedTurns).toEqual(completedTurns);
+      expect(decision.inFlightTurn).toMatchObject({
+        userText: "do work",
+        steps: [{ toolCallId: "t1", result: { content: "ok" } }],
+      });
     }
+  });
+
+  it("refuses checkpoint recovery without the active user turn", () => {
+    const decision = planRecovery({
+      stored: storedBase({ checkpoint: new Uint8Array([1]) }),
+      completedTurns: [],
+      toolResults: [{ toolCallId: "t1", content: "ok" }],
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision).toMatchObject({ kind: "skip", reason: "no_inflight_tool_continuation" });
+  });
+
+  it("validates the entire active turn even when the checkpoint's pending ids match", () => {
+    const decision = planRecovery({
+      stored: storedBase({ checkpoint: new Uint8Array([1]) }),
+      completedTurns: [],
+      inFlightTurn: toolTurn(["t1", "missing"]),
+      toolResults: [{ toolCallId: "t1", content: "ok" }],
+      requestId: "r1",
+      convKey: "c1",
+    });
+    expect(decision).toMatchObject({ kind: "skip", reason: "pending_tool_call_mismatch" });
   });
 
   it("does not replay tool results into a checkpoint without a mid-pause snapshot", () => {

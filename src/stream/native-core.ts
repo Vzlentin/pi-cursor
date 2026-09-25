@@ -110,7 +110,6 @@ import {
   getTurnToolCallResults,
   parseMessages,
   parseToolCallArguments,
-  stripInFlightResults,
   systemPromptHasSessionMemory,
 } from "./message-parsing.js";
 export {
@@ -186,7 +185,7 @@ import {
   setMetricEmitter,
   type MetricEmitter,
 } from "./debug-log.js";
-import { cloneParsedImage } from "./images.js";
+import { cloneParsedImage, mergeImages } from "./images.js";
 import {
   resolveModelId as resolveModelIdImpl,
   resolveRequestedModelId as resolveRequestedModelIdImpl,
@@ -194,7 +193,7 @@ import {
   type CursorResolvableModel as ExtractedCursorResolvableModel,
   type ResolvedCursorModelRouting as ExtractedResolvedCursorModelRouting,
 } from "./model-routing.js";
-import { liveTranscript, withSyntheticCurrentTurn } from "./client-transcript.js";
+import { clientInFlightTurn, liveTranscript, recoveredTranscript } from "./client-transcript.js";
 import {
   planRecovery as planRecoveryImpl,
   wrapRecoveredToolResults as wrapRecoveredToolResultsImpl,
@@ -282,6 +281,7 @@ export const __testInternals = {
   trimBlobStore,
   classifyBridgeExit,
   writeNativeStream,
+  handleCursorNativeRequest,
   setMetricEmitterForTests(factory?: MetricEmitter) {
     setMetricEmitter(factory);
   },
@@ -325,6 +325,15 @@ export function wrapRecoveredToolResults(
 function collectToolResultImages(toolResults: ToolResultInfo[]): ParsedImageContent[] {
   return collapseToolResultsByIdImpl(toolResults).flatMap((result) =>
     (result.images ?? []).map(cloneParsedImage),
+  );
+}
+
+function collectRecoveryImages(turn: ParsedTurn): ParsedImageContent[] {
+  return (
+    mergeImages(
+      turn.userImages,
+      ...turn.steps.map((step) => (step.kind === "toolCall" ? step.result?.images : undefined)),
+    )?.map(cloneParsedImage) ?? []
   );
 }
 
@@ -606,20 +615,21 @@ async function handleCursorNativeRequest(
         pendingToolCallIds: toolResults.map((r) => r.toolCallId),
       });
       const mcpTools = buildMcpToolDefinitions(selectedTools);
-      // Images ride the recovered user turn on this path too — dropping them here silently lost
-      // screenshots that the rebuild path preserves.
-      const recoveredUserImages = collectToolResultImages(toolResults);
+      const recoveredTurns = [...decision.completedTurns, decision.inFlightTurn];
+      // Root history notes images but does not encode them; reattach the active
+      // request's images as well as tool images on the continuation action.
+      const recoveredUserImages = collectRecoveryImages(decision.inFlightTurn);
       const recoveredCurrentTurn: ParsedTurn = {
-        userText: decision.wrappedText,
+        userText: decision.continuationText,
         steps: [],
         ...(recoveredUserImages.length ? { userImages: recoveredUserImages } : {}),
       };
       const payload = buildCursorRequest({
         modelId,
         systemPrompt,
-        userText: decision.wrappedText,
+        userText: decision.continuationText,
         userImages: recoveredUserImages,
-        turns,
+        turns: recoveredTurns,
         conversationId: decision.conversationId,
         checkpoint: decision.checkpoint,
         existingBlobStore: decision.blobStore,
@@ -637,8 +647,9 @@ async function handleCursorNativeRequest(
         modelId,
         bridgeKey,
         convKey,
-        completedTurns: turns,
+        completedTurns: recoveredTurns,
         currentTurn: recoveredCurrentTurn,
+        clientTranscript: recoveredTranscript(decision.completedTurns, decision.inFlightTurn),
         writer,
         options,
         requestId,
@@ -662,16 +673,16 @@ async function handleCursorNativeRequest(
       });
       const mcpTools = buildMcpToolDefinitions(selectedTools);
       const rebuiltCompletedTurns = [...decision.completedTurns, decision.inFlightTurn];
-      const recoveredUserImages = collectToolResultImages(decision.toolResults);
+      const recoveredUserImages = collectRecoveryImages(decision.inFlightTurn);
       const recoveredCurrentTurn: ParsedTurn = {
-        userText: decision.wrappedText,
+        userText: decision.continuationText,
         steps: [],
         ...(recoveredUserImages.length ? { userImages: recoveredUserImages } : {}),
       };
       const payload = buildCursorRequest({
         modelId,
         systemPrompt,
-        userText: decision.wrappedText,
+        userText: decision.continuationText,
         userImages: recoveredUserImages,
         turns: rebuiltCompletedTurns,
         conversationId: decision.conversationId,
@@ -694,6 +705,7 @@ async function handleCursorNativeRequest(
         convKey,
         completedTurns: rebuiltCompletedTurns,
         currentTurn: recoveredCurrentTurn,
+        clientTranscript: recoveredTranscript(decision.completedTurns, decision.inFlightTurn),
         writer,
         options,
         requestId,
@@ -951,7 +963,7 @@ function writeNativeStream(
         checkpointRef.current,
         blobStore,
         persistenceTurns,
-        currentTurn,
+        clientInFlightTurn(clientTranscript, currentTurn),
         emittedExecs.length > 0 ? emittedExecs : preservedMidPauseExecs,
       );
       cleanupBridge(bridge, heartbeatTimer, bridgeKey);
@@ -1049,7 +1061,7 @@ function writeNativeStream(
       checkpointRef.current,
       blobStore,
       persistenceTurns,
-      currentTurn,
+      clientInFlightTurn(clientTranscript, currentTurn),
       emittedExecs.length > 0 ? emittedExecs : preservedMidPauseExecs,
     );
     debugLog("native.stream.abort", {
@@ -1138,8 +1150,8 @@ function writeNativeStream(
           stored,
           checkpointRef.current,
           blobStore,
-          completedTurns,
-          currentTurn,
+          persistenceTurns,
+          clientInFlightTurn(clientTranscript, currentTurn),
           convKey,
         );
         debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
@@ -1495,7 +1507,7 @@ function writeNativeStream(
             checkpointRef.current,
             blobStore,
             persistenceTurns,
-            currentTurn,
+            clientInFlightTurn(clientTranscript, currentTurn),
             emittedExecs.length > 0 ? emittedExecs : preservedMidPauseExecs,
           );
           cleanupBridge(bridge, heartbeatTimer, bridgeKey);
@@ -1552,8 +1564,8 @@ function writeNativeStream(
             stored,
             checkpointRef.current,
             blobStore,
-            completedTurns,
-            currentTurn,
+            persistenceTurns,
+            clientInFlightTurn(clientTranscript, currentTurn),
             convKey,
           );
           debugLog("native.stream.checkpoint_committed", { requestId, convKey, stored });
@@ -1637,10 +1649,6 @@ function handleNativeToolResultResume(
     clientTranscript: parkedTranscript,
   } = active;
   const resumeTranscript = parkedTranscript ?? liveTranscript(completedTurns);
-  const recoveredClientTranscript = withSyntheticCurrentTurn(
-    resumeTranscript,
-    ctx.inFlightTurn ?? currentTurn,
-  );
   const resumeIdleTimeoutMs = resolveResumeIdleTimeoutMs(
     process.env.PI_CURSOR_RESUME_IDLE_TIMEOUT_MS,
   );
@@ -1690,6 +1698,7 @@ function handleNativeToolResultResume(
       checkpointRef,
       state: pausedState,
       historyFingerprint,
+      clientTranscript: resumeTranscript,
     });
     debugLog("native.tool_resume.partial_wait", {
       requestId,
@@ -1761,14 +1770,16 @@ function handleNativeToolResultResume(
     maxRetries: resolveStreamIdleMaxRetries(process.env.PI_CURSOR_STREAM_IDLE_MAX_RETRIES),
     // Phase 0 found mcpArgs-before-checkpoint across composer/gemini/gpt-5.4, so this stays model-agnostic.
     recoverBeforeRetry: true,
-    restart(nextAttempt: number, _context: IdleRestartContext) {
+    restart(nextAttempt: number, context: IdleRestartContext) {
       idleRetry.currentAttempt = nextAttempt;
       const stored = conversationStates.get(convKey);
       const decision = planRecovery({
         stored,
         toolResults,
         completedTurns,
-        inFlightTurn: stripInFlightResults(ctx.inFlightTurn ?? currentTurn),
+        // Include text streamed after the result was sent, not just the Pi
+        // snapshot from before this resume. A recovered wire turn is a suffix.
+        inFlightTurn: clientInFlightTurn(resumeTranscript, context.currentTurn),
         rebuildReason: "synthesized_after_idle",
         sessionId,
         requestId: requestId ?? "native-tool-idle-retry",
@@ -1784,16 +1795,16 @@ function handleNativeToolResultResume(
           decision,
         });
         const rebuiltCompletedTurns = [...decision.completedTurns, decision.inFlightTurn];
-        const recoveredUserImages = collectToolResultImages(decision.toolResults);
+        const recoveredUserImages = collectRecoveryImages(decision.inFlightTurn);
         const recoveredCurrentTurn: ParsedTurn = {
-          userText: decision.wrappedText,
+          userText: decision.continuationText,
           steps: [],
           ...(recoveredUserImages.length ? { userImages: recoveredUserImages } : {}),
         };
         const payload = buildCursorRequest({
           modelId,
           systemPrompt,
-          userText: decision.wrappedText,
+          userText: decision.continuationText,
           userImages: recoveredUserImages,
           turns: rebuiltCompletedTurns,
           conversationId: decision.conversationId,
@@ -1816,7 +1827,7 @@ function handleNativeToolResultResume(
           convKey,
           completedTurns: rebuiltCompletedTurns,
           currentTurn: recoveredCurrentTurn,
-          clientTranscript: recoveredClientTranscript,
+          clientTranscript: recoveredTranscript(decision.completedTurns, decision.inFlightTurn),
           writer,
           options,
           requestId,
@@ -1861,18 +1872,19 @@ function handleNativeToolResultResume(
         attempt: nextAttempt,
         pendingToolCallIds: toolResults.map((r) => r.toolCallId),
       });
-      const recoveredUserImages = collectToolResultImages(toolResults);
+      const recoveredTurns = [...decision.completedTurns, decision.inFlightTurn];
+      const recoveredUserImages = collectRecoveryImages(decision.inFlightTurn);
       const recoveredCurrentTurn: ParsedTurn = {
-        userText: decision.wrappedText,
+        userText: decision.continuationText,
         steps: [],
         ...(recoveredUserImages.length ? { userImages: recoveredUserImages } : {}),
       };
       const payload = buildCursorRequest({
         modelId,
         systemPrompt,
-        userText: decision.wrappedText,
+        userText: decision.continuationText,
         userImages: recoveredUserImages,
-        turns: completedTurns,
+        turns: recoveredTurns,
         conversationId: decision.conversationId,
         checkpoint: decision.checkpoint,
         existingBlobStore: decision.blobStore,
@@ -1890,9 +1902,9 @@ function handleNativeToolResultResume(
         modelId,
         bridgeKey,
         convKey,
-        completedTurns,
+        completedTurns: recoveredTurns,
         currentTurn: recoveredCurrentTurn,
-        clientTranscript: recoveredClientTranscript,
+        clientTranscript: recoveredTranscript(decision.completedTurns, decision.inFlightTurn),
         writer,
         options,
         requestId,
@@ -2005,6 +2017,7 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
   let blobStore = input.blobStore;
   let completedTurns = input.completedTurns;
   let currentTurn = input.currentTurn;
+  let clientTranscript = input.clientTranscript ?? liveTranscript(completedTurns);
 
   const controller: StreamIdleRetryController = {
     currentAttempt: 1,
@@ -2039,11 +2052,15 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
       ) {
         try {
           const continueText = CHECKPOINT_CONTINUATION_PROMPT;
+          const piCurrentTurn = clientInFlightTurn(clientTranscript, context.currentTurn);
+          const replayTurns = [...clientTranscript.completedTurns, piCurrentTurn];
+          const userImages = collectRecoveryImages(piCurrentTurn);
           const payload = buildCursorRequest({
             modelId: input.modelId,
             systemPrompt: input.systemPrompt,
             userText: continueText,
-            turns: context.completedTurns,
+            userImages,
+            turns: replayTurns,
             conversationId: input.conversationId,
             checkpoint: context.latestCheckpoint,
             existingBlobStore: context.blobStore,
@@ -2053,16 +2070,17 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
           });
           requestBytes = payload.requestBytes;
           blobStore = payload.blobStore;
-          completedTurns = context.completedTurns;
-          currentTurn = { userText: continueText, steps: [] };
+          completedTurns = replayTurns;
+          clientTranscript = recoveredTranscript(clientTranscript.completedTurns, piCurrentTurn);
+          currentTurn = { userText: continueText, userImages, steps: [] };
           const stored = conversationStates.get(input.convKey);
           if (stored) {
             commitStoredCheckpoint(
               stored,
               context.latestCheckpoint,
               context.blobStore,
-              context.completedTurns,
-              context.currentTurn,
+              clientTranscript.completedTurns,
+              piCurrentTurn,
               input.convKey,
             );
           }
@@ -2109,7 +2127,7 @@ function startNativeStreamWithIdleRetries(input: NativeStreamAttemptInput): void
           input.streamIdleTimeoutMs,
           { current: null },
           [],
-          input.clientTranscript ?? liveTranscript(completedTurns),
+          clientTranscript,
         );
       };
 

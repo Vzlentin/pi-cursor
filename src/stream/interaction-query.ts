@@ -32,6 +32,7 @@ import {
   type InteractionResponse,
 } from "../proto/agent_pb.js";
 import { frameConnectMessage } from "../client/bridge.js";
+import { PI_QUESTION_UNAVAILABLE } from "./interaction-policy.js";
 
 const CURSOR_WEB_FETCH_INTERACTION_FIELD = 9;
 
@@ -224,7 +225,7 @@ function rejectSwitchMode(id: number, sendFrame: (data: Uint8Array) => void): vo
   );
 }
 
-function skipAskQuestion(id: number, sendFrame: (data: Uint8Array) => void): void {
+function failUnavailableAskQuestion(id: number, sendFrame: (data: Uint8Array) => void): void {
   sendInteractionResponse(
     create(InteractionResponseSchema, {
       id,
@@ -235,8 +236,7 @@ function skipAskQuestion(id: number, sendFrame: (data: Uint8Array) => void): voi
             result: {
               case: "error",
               value: create(AskQuestionErrorSchema, {
-                errorMessage:
-                  "Interactive questions are not available in Pi. Continue with a reasonable default or ask the user in chat.",
+                errorMessage: PI_QUESTION_UNAVAILABLE,
               }),
             },
           }),
@@ -352,8 +352,8 @@ export function handleInteractionQuery(
       rejectSwitchMode(query.id, sendFrame);
       return { handled: true, action: "switch_mode_rejected", queryCase };
     case "askQuestionInteractionQuery":
-      skipAskQuestion(query.id, sendFrame);
-      return { handled: true, action: "ask_question_skipped", queryCase };
+      failUnavailableAskQuestion(query.id, sendFrame);
+      return { handled: true, action: "ask_question_unavailable", queryCase };
     case "createPlanRequestQuery":
       skipCreatePlan(query.id, sendFrame);
       return { handled: true, action: "create_plan_skipped", queryCase };
