@@ -104,13 +104,24 @@ describe("inferCursorMaxOutputTokens", () => {
 });
 
 describe("bundled fallback catalog", () => {
-  // The catalog is a snapshot of a live discovery response and had drifted: every
-  // "1M" Claude row claimed a 200K window. Both columns are derived now, so this
-  // guards the derivation rather than the file.
-  it("derives both limit columns from the model id and name", () => {
-    for (const model of FALLBACK_MODELS) {
-      expect(model.contextWindow).toBe(inferCursorContextWindow(model.id, model.name));
-      expect(model.maxTokens).toBe(inferCursorMaxOutputTokens(model.id, model.name));
+  // Pin representative catalog outputs independently of the inference helpers used
+  // to build FALLBACK_MODELS, so a shared inference regression cannot update both
+  // the actual value and its test oracle.
+  it("publishes independently pinned limits for representative rows", () => {
+    const expected = [
+      { id: "claude-4.6-opus-high", contextWindow: 1_000_000, maxTokens: 128_000 },
+      { id: "claude-4.5-sonnet", contextWindow: 1_000_000, maxTokens: 64_000 },
+      { id: "gpt-5.5-high", contextWindow: 272_000, maxTokens: 128_000 },
+      { id: "gpt-5.5-1m-high", contextWindow: 1_000_000, maxTokens: 128_000 },
+      { id: "composer-2", contextWindow: 200_000, maxTokens: 64_000 },
+      { id: "auto", contextWindow: 200_000, maxTokens: 64_000 },
+    ];
+
+    for (const row of expected) {
+      expect(
+        FALLBACK_MODELS.find((model) => model.id === row.id),
+        row.id,
+      ).toMatchObject(row);
     }
   });
 
