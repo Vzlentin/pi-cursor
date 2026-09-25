@@ -8,6 +8,7 @@ import { join as pathJoin } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getCacheDir } from "../utils/cache-dir.js";
 import { cleanupSessionState } from "../stream/session-state.js";
+import { destroyAllIdleBridges } from "../stream/bridge-session.js";
 
 let extensionDebugLogFilePath: string | undefined;
 
@@ -253,7 +254,11 @@ export function registerSessionLifecycleCleanup(pi: ExtensionAPI): void {
   pi.on("session_before_switch", cleanupCurrentSession);
   pi.on("session_before_fork", cleanupCurrentSession);
   pi.on("session_before_tree", cleanupCurrentSession);
-  pi.on("session_shutdown", cleanupCurrentSession);
+  pi.on("session_shutdown", (event, ctx) => {
+    cleanupCurrentSession(event, ctx);
+    // Also release idle connections created outside this session (e.g. child calls).
+    destroyAllIdleBridges();
+  });
 }
 
 export function registerExtensionDebugHooks(pi: ExtensionAPI): void {

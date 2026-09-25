@@ -67,6 +67,21 @@ describe("root prompt messages", () => {
     expect(JSON.stringify(messages)).toContain("ask in ordinary assistant chat");
   });
 
+  it.each(["", "Use the ipython tool to compute 2**100."])(
+    "points Pi tools at the dynamic catalog even with system prompt %j",
+    (systemPrompt) => {
+      const messages = buildRootPromptMessages(systemPrompt, []);
+      const rules = messages[0]!.content[0];
+      if (rules.type !== "text") throw new Error("expected rules text");
+      expect(rules.text).toContain("pi namespace of the dynamic tool catalog");
+      expect(rules.text).toContain("GetDynamicTools");
+      expect(rules.text).toContain("CallDynamicTool with namespace pi");
+      expect(rules.text).toContain("ipython, the goal tools, the session tools");
+      expect(rules.text).toContain("Shell, Read, Write and StrReplace, respectively");
+      expect(rules.text).toMatch(/^<rules>\n[\s\S]*\n<\/rules>$/);
+    },
+  );
+
   it("keeps tool-only rounds in causal order instead of moving results to the end", () => {
     const messages = turnRootMessages({
       userText: "read then edit",

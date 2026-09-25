@@ -28,6 +28,9 @@ import {
   GetBlobResultSchema,
   KvClientMessageSchema,
   McpResultSchema,
+  McpStateExecResultSchema,
+  McpStateServerSchema,
+  McpStateSuccessSchema,
   McpToolNotFoundSchema,
   ReadMcpResourceExecResultSchema,
   ReadMcpResourceRejectedSchema,
@@ -45,8 +48,6 @@ import {
   ShellRejectedSchema,
   StartGrindExecutionResultSchema,
   StartGrindExecutionSuccessSchema,
-  StartGrindPlanningResultSchema,
-  StartGrindPlanningSuccessSchema,
   TruncatedToolCallResultSchema,
   TruncatedToolCallSuccessSchema,
   WriteShellStdinErrorSchema,
@@ -684,14 +685,30 @@ function handleExecMessageInner(
     );
     return true;
   }
-  if (execCase === "startGrindPlanningArgs") {
+  if (execMsg.message.case === "mcpStateExecArgs") {
+    // GetDynamicTools discovers Pi through this catalog, not requestContext.tools.
+    lifecycleLog("mcp_state_exec", {
+      serverIdentifiers: execMsg.message.value.serverIdentifiers,
+      kickOnly: execMsg.message.value.kickOnly,
+      toolCount: mcpTools.length,
+    });
     sendExecResult(
       execMsg,
-      "startGrindPlanningResult",
-      create(StartGrindPlanningResultSchema, {
+      "mcpStateExecResult",
+      create(McpStateExecResultSchema, {
         result: {
           case: "success",
-          value: create(StartGrindPlanningSuccessSchema, {}),
+          value: create(McpStateSuccessSchema, {
+            servers: [
+              create(McpStateServerSchema, {
+                serverName: "pi",
+                serverIdentifier: "pi",
+                tools: mcpTools,
+                instructions: [],
+                status: "connected",
+              }),
+            ],
+          }),
         },
       }),
       sendFrame,

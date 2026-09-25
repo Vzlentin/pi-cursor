@@ -1141,6 +1141,9 @@ function writeNativeStream(
         convKey,
       });
       removeActiveBridge(bridgeKey);
+      // The stream ended during a tool pause; recovery uses the saved snapshot,
+      // not this now-unregistered connection.
+      if (bridge.alive) bridge.end();
       return;
     }
     emitFlushed();
@@ -1160,7 +1163,14 @@ function writeNativeStream(
       }
     }
     writer.done("stop", state);
-    parkIdleBridge(bridgeKey, bridge);
+    if (stored?.sessionScoped) {
+      parkIdleBridge(bridgeKey, bridge);
+    } else {
+      // Nested completions have no Pi session to clean up their content-keyed
+      // bridge. Keeping its HTTP/2 socket open would pin headless processes.
+      removeActiveBridge(bridgeKey);
+      if (bridge.alive) bridge.end();
+    }
   };
   bridge.onStreamDone?.(finalizeSuccessfulStream);
 

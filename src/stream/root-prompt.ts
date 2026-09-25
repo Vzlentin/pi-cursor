@@ -31,6 +31,13 @@ import { normalizeToolResultForTransport } from "./tool-result.js";
 /** Provider identifier used when registering Pi's tools as Cursor MCP tools. */
 const MCP_PROVIDER_IDENTIFIER = "pi";
 
+const PI_TOOL_CATALOG_POLICY =
+  "Pi's tools (including ipython, the goal tools, the session tools, and other extension tools) " +
+  "are in the pi namespace of the dynamic tool catalog. Use GetDynamicTools to discover them, " +
+  "then CallDynamicTool with namespace pi to call them. Check this catalog before concluding " +
+  "that a Pi tool is unavailable. For bash, read, write and edit, use Cursor's built-in " +
+  "Shell, Read, Write and StrReplace, respectively.";
+
 export interface RootPromptTextPart {
   type: "text";
   text: string;
@@ -86,7 +93,10 @@ export function systemPromptRootMessage(systemPrompt: string): RootPromptMessage
   return {
     role: "user",
     content: [
-      { type: "text", text: `<rules>\n${systemPrompt}\n\n${PI_QUESTION_POLICY}\n</rules>` },
+      {
+        type: "text",
+        text: `<rules>\n${systemPrompt}\n\n${PI_QUESTION_POLICY}\n\n${PI_TOOL_CATALOG_POLICY}\n</rules>`,
+      },
     ],
   };
 }

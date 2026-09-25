@@ -54,6 +54,26 @@ native protobuf result Cursor waits for (`src/stream/native-pi-tools.ts`).
 - The unmodified rollback initially stalled on shell operations; do not remove
   the stream-close fix when rebuilding.
 
+## Dynamic tool discovery and child cleanup (2026-09-25)
+
+- Exec field 36 is `McpStateExecArgs` / `McpStateExecResult`, not grind planning.
+  The reply advertises one connected `pi` server with the request's MCP tools.
+- The root prompt directs models to `GetDynamicTools` and `CallDynamicTool` in
+  namespace `pi`, while keeping the native routes for bash/read/write/edit.
+- Completed anonymous requests close their HTTP/2 bridges instead of retaining
+  them for an hour. Session-owned bridges still support reuse. Shutdown drains
+  all idle bridges, and streams ending mid-tool-pause retain recovery state but
+  close their unregistered connections.
+- `corepack yarn check`: passed (43 files, 345 tests and all legacy checks).
+  `corepack yarn build`: passed.
+- Live `cursor/claude-opus-5-5` with pi-ipython and pi-rlm: the prompt
+  "Use the ipython tool to compute 2**100" invoked Pi `ipython`, not bash,
+  and printed `1267650600228229401496703205376`. An RLM child returned `ok` /
+  `pong`; both headless runs exited 0, and the child's bridge logged its close.
+- Regression tests cover the field-36 wire shape, returned tool schemas,
+  prompt guidance, anonymous completion cleanup, session reuse, mid-pause
+  cleanup and shutdown draining.
+
 ## Known limitations
 
 With `PI_CURSOR_NATIVE_TOOLS=native`, native calls bypass Pi tool hooks, tool
@@ -62,9 +82,10 @@ Cursor makes as an edit's base and the full-file content returned for model
 reads come from disk, not from Pi's tool output. Background shell/stdin support
 is still limited.
 
-This does not fix upstream MCP tool discovery. Unknown, non-stranding wire fields
-were logged during successful tests. Short smoke tests do not establish long-run
-stability, compaction behavior, or full Cursor protocol compatibility.
+Unknown, non-stranding wire fields were logged during earlier successful tests.
+Short smoke tests do not establish long-run stability, compaction behavior, or
+full Cursor protocol compatibility. The separate pi-session-recall failure
+(`No API provider registered for api: cursor-native`) is not addressed here.
 
 ## Build and activation
 
@@ -89,7 +110,10 @@ corepack yarn build
 ```
 
 Push to the fork's `main`, then run `pi update --extensions` and restart Pi.
+The `prepare` script skips an existing `dist/index.js`; if updating an existing
+checkout, run `npm run build` there to ensure the installed bundle is current.
 Prefer a fresh chat so old refusal messages do not remain in the model's context.
+Do not reload sessions that own live kernels; start a new session instead.
 
 ## Undo
 
