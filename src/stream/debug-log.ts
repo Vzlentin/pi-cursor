@@ -4,7 +4,7 @@
  * Three separate channels, deliberately:
  *   - `debugLog`     verbose JSONL, opt-in via PI_CURSOR_PROVIDER_DEBUG
  *   - `lifecycleLog` always-on compact log for diagnosing multi-minute stalls
- *   - `emitMetric`   structured counters, redirectable in tests
+ *   - `emitMetric`   structured counters, written to the lifecycle log, redirectable in tests
  *
  * Everything here swallows its own errors: diagnostics must never break a turn.
  * Payloads pass through `sanitizeForDebug`, which truncates strings, summarizes
@@ -220,6 +220,12 @@ export function getLifecycleLogPath(): string {
 }
 
 export function lifecycleLog(event: string, data?: Record<string, unknown>): void {
+  appendLifecycleLine(event, data);
+  // Also mirror into verbose debug log when enabled.
+  debugLog(`lifecycle.${event}`, data);
+}
+
+function appendLifecycleLine(event: string, data?: Record<string, unknown>): void {
   try {
     const line = JSON.stringify({
       ts: new Date().toISOString(),
@@ -234,21 +240,13 @@ export function lifecycleLog(event: string, data?: Record<string, unknown>): voi
   } catch {
     // Never throw from diagnostics.
   }
-  // Also mirror into verbose debug log when enabled.
-  debugLog(`lifecycle.${event}`, data);
 }
 
 export type MetricEmitter = (event: string, data: Record<string, unknown>) => void;
 
+// Never write metrics to stdout/stderr: pi owns the terminal and stray lines corrupt its TUI.
 const defaultMetricEmitter: MetricEmitter = (event, data) => {
-  console.warn(
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      pid: process.pid,
-      event,
-      ...(sanitizeForDebug(data) as Record<string, unknown>),
-    }),
-  );
+  appendLifecycleLine(event, data);
 };
 
 let metricEmitter: MetricEmitter = defaultMetricEmitter;
