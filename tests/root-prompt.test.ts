@@ -65,6 +65,7 @@ describe("root prompt messages", () => {
     expect(messages).toHaveLength(1);
     expect(JSON.stringify(messages)).toContain("AskUserQuestion/AskQuestion UI is unavailable");
     expect(JSON.stringify(messages)).toContain("ask in ordinary assistant chat");
+    expect(JSON.stringify(messages).match(/You are running in Pi/g)).toHaveLength(1);
   });
 
   it.each(["", "Use the ipython tool to compute 2**100."])(
@@ -77,7 +78,13 @@ describe("root prompt messages", () => {
       expect(rules.text).toContain("GetDynamicTools");
       expect(rules.text).toContain("CallDynamicTool with namespace pi");
       expect(rules.text).toContain("ipython, the goal tools, the session tools");
-      expect(rules.text).toContain("Shell, Read, Write and StrReplace, respectively");
+      expect(rules.text).toContain("historical aliases, not the current callable tool list");
+      expect(rules.text).toContain("bash / mcp_pi_bash -> Shell");
+      expect(rules.text).toContain("read / mcp_pi_read -> Read");
+      expect(rules.text).toContain("write / mcp_pi_write -> Write");
+      expect(rules.text).toContain("edit / mcp_pi_edit -> StrReplace");
+      expect(rules.text).toContain("current input schemas");
+      expect(rules.text).toContain("Respect disabled tools and permission denials");
       expect(rules.text).toMatch(/^<rules>\n[\s\S]*\n<\/rules>$/);
     },
   );
@@ -155,6 +162,70 @@ describe("root prompt messages", () => {
 });
 
 describe("request build root prompt wiring", () => {
+  it.each([false, true])(
+    "includes tool-name recovery guidance alongside replayed calls (checkpoint: %s)",
+    (withCheckpoint) => {
+      const checkpoint = withCheckpoint
+        ? toBinary(
+            ConversationStateStructureSchema,
+            create(ConversationStateStructureSchema, { clientName: "cli" }),
+          )
+        : null;
+      const payload = buildCursorRequest({
+        modelId: "claude-opus-5-5",
+        systemPrompt: "",
+        userText: "continue",
+        turns: [
+          {
+            userText: "check the working directory",
+            steps: [
+              {
+                kind: "toolCall",
+                toolCallId: "shell-1",
+                toolName: "bash",
+                arguments: { command: "pwd" },
+                result: { content: "/workspace", isError: false },
+              },
+              { kind: "assistantText", text: "The shell tool is unavailable right now." },
+            ],
+          },
+        ],
+        conversationId: "conv-tools",
+        checkpoint,
+      });
+      const messages = rootPromptMessages(payload);
+      const rules = messages[1] as RootPromptMessage;
+      const policy = rules.content[0];
+      if (policy.type !== "text") throw new Error("expected rules text");
+      expect(policy.text).toContain("bash / mcp_pi_bash -> Shell");
+      expect(policy.text).toContain(
+        "Before reporting lost access or asking the user to restore tools",
+      );
+      expect(policy.text).toContain("check the current tool definitions and dynamic catalog");
+      expect(policy.text).toContain("not from historical aliases or earlier assistant claims");
+      // Explain the name difference without changing replayed arguments or hiding old claims.
+      expect(messages[3]).toMatchObject({
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "shell-1",
+            toolName: "mcp_pi_bash",
+            args: { command: "pwd" },
+          },
+        ],
+      });
+      expect(messages[4]).toMatchObject({
+        role: "tool",
+        content: [{ toolCallId: "shell-1", toolName: "mcp_pi_bash", result: "/workspace" }],
+      });
+      expect(messages[5]).toMatchObject({
+        role: "assistant",
+        content: [{ type: "text", text: "The shell tool is unavailable right now." }],
+      });
+    },
+  );
+
   it("publishes system prompt and completed turns when there is no checkpoint", () => {
     const payload = buildCursorRequest({
       modelId: "cursor-grok-4.6-low",

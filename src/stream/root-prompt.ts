@@ -32,11 +32,22 @@ import { normalizeToolResultForTransport } from "./tool-result.js";
 const MCP_PROVIDER_IDENTIFIER = "pi";
 
 const PI_TOOL_CATALOG_POLICY =
+  "Replayed history uses mcp_pi_* tool names. These are historical aliases, not the current " +
+  "callable tool list. A missing historical alias does not mean that shell or file access " +
+  "was lost. For current calls, " +
+  "use Cursor's built-in tools with their current input schemas: " +
+  "bash / mcp_pi_bash -> Shell; read / mcp_pi_read -> Read; " +
+  "write / mcp_pi_write -> Write; edit / mcp_pi_edit -> StrReplace. " +
+  "The pi-cursor extension routes these calls to the corresponding enabled Pi tools.\n\n" +
   "Pi's tools (including ipython, the goal tools, the session tools, and other extension tools) " +
   "are in the pi namespace of the dynamic tool catalog. Use GetDynamicTools to discover them, " +
-  "then CallDynamicTool with namespace pi to call them. Check this catalog before concluding " +
-  "that a Pi tool is unavailable. For bash, read, write and edit, use Cursor's built-in " +
-  "Shell, Read, Write and StrReplace, respectively.";
+  "then CallDynamicTool with namespace pi to call them.\n\n" +
+  "Before reporting lost access or asking the user to restore tools, check the current tool " +
+  "definitions and dynamic catalog. For an authorized operation, use the current mapped tool. " +
+  "Infer unavailability from current tool definitions or actual tool errors, not from " +
+  "historical aliases or earlier assistant claims. A failed command does not by itself mean " +
+  "the shell tool is unavailable. Respect disabled tools and permission denials; this mapping " +
+  "does not grant additional access.";
 
 export interface RootPromptTextPart {
   type: "text";
