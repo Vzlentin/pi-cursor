@@ -26,6 +26,7 @@ import {
 } from "../client/h2-unary.js";
 import { getBridgeFactory } from "./bridge-session.js";
 import { getCursorAgentUrl } from "./config.js";
+import { lifecycleLog } from "./debug-log.js";
 import { writeCachedCatalog } from "./model-cache.js";
 import { inferCursorContextWindow, inferCursorMaxOutputTokens } from "../models/limits.js";
 
@@ -203,12 +204,11 @@ export async function getCursorModels(
       }
     }
   } catch (err) {
-    console.error(
-      "[cursor-provider] Model discovery failed:",
-      err instanceof Error ? err.message : err,
-    );
+    lifecycleLog("model_discovery_failed", {
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
-  console.warn("[cursor-provider] Model discovery returned no models");
+  lifecycleLog("model_discovery_empty");
   return [];
 }
 
@@ -255,10 +255,9 @@ export async function getCursorParameterizedModels(
     cachedParameterizedModels = { tokenHash, models, expiresAt: Date.now() + MODEL_CACHE_TTL_MS };
     return models;
   } catch (err) {
-    console.error(
-      "[cursor-provider] Parameterized model discovery failed:",
-      err instanceof Error ? err.message : err,
-    );
+    lifecycleLog("parameterized_model_discovery_failed", {
+      message: err instanceof Error ? err.message : String(err),
+    });
     return [];
   }
 }

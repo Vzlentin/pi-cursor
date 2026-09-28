@@ -722,7 +722,6 @@ function handleExecMessageInner(
   // — Cursor parks the run on the unanswered exec id and heartbeats forever.
   // ExecClientThrow answers any exec by id without claiming a result, so the model
   // sees a failed tool instead of a dead stream.
-  console.error(`[cursor-provider] UNHANDLED exec case: "${execCase}". Answering with a throw.`);
   lifecycleLog("exec_unknown_shape", {
     execCase: execCase ?? "unknown",
     unknownFields: describeUnknownFields(execMsg),
