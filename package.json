@@ -32,7 +32,8 @@
     "LICENSE",
     "README.md",
     "CHANGELOG.md",
-    "dist"
+    "dist",
+    "src"
   ],
   "scripts": {
     "build": "tsup",
@@ -60,7 +61,7 @@
   },
   "pi": {
     "extensions": [
-      "./dist/index.js"
+      "./src/index.ts"
     ]
   },
   "dependencies": {

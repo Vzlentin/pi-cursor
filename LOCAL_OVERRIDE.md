@@ -84,8 +84,17 @@ is still limited.
 
 Unknown, non-stranding wire fields were logged during earlier successful tests.
 Short smoke tests do not establish long-run stability, compaction behavior, or
-full Cursor protocol compatibility. The separate pi-session-recall failure
-(`No API provider registered for api: cursor-native`) is not addressed here.
+full Cursor protocol compatibility.
+
+## Source entry for Pi (2026-09-29)
+
+`pi.extensions` points at `./src/index.ts` instead of `./dist/index.js`. Pi
+imports a prebuilt `.js` entry natively, so the bundle resolved its own
+`@earendil-works/pi-ai` from `node_modules` and registered `cursor-native` in
+that copy's registry. Other extensions call `complete()` on Pi's copy, so
+pi-session-recall's `session_query` failed with `No API provider registered
+for api: cursor-native`. A `.ts` entry goes through jiti, which maps `pi-ai`
+to Pi's own module.
 
 ## Build and activation
 
@@ -95,8 +104,8 @@ Pi installs this fork from GitHub. In `~/.pi/agent/settings.json`:
 "https://github.com/Vzlentin/pi-cursor"
 ```
 
-`dist/` is gitignored; the package's `prepare` script runs `tsup` when Pi
-installs dependencies in its managed checkout. `.npmrc` sets `legacy-peer-deps`
+Pi loads `src/index.ts`, so the managed checkout needs no build. `dist/` is
+gitignored and only serves the npm `main` entry. `.npmrc` sets `legacy-peer-deps`
 because npm 10 crashes (`reading 'edgesOut'`) resolving the dev peer set of a git
 install. `pi update --extensions` pulls
 new commits from the fork's `main`. It does not receive npm updates.
@@ -110,8 +119,6 @@ corepack yarn build
 ```
 
 Push to the fork's `main`, then run `pi update --extensions` and restart Pi.
-The `prepare` script skips an existing `dist/index.js`; if updating an existing
-checkout, run `npm run build` there to ensure the installed bundle is current.
 Prefer a fresh chat so old refusal messages do not remain in the model's context.
 Do not reload sessions that own live kernels; start a new session instead.
 
