@@ -6,6 +6,7 @@
  * `ParsedTurn`s, reattaches tool-result images to the call that produced them,
  * and folds context-mode side-channel messages into the system prompt.
  */
+import type { JsonObject } from "@earendil-works/pi-ai";
 import {
   frameContextModeSideChannel as frameContextModeSideChannelImpl,
   isContextModeSideChannelText as isContextModeSideChannelTextImpl,
@@ -144,11 +145,11 @@ export function normalizeToolResultText(
   return images?.length && content.trim() === "(see attached image)" ? "" : content;
 }
 
-export function parseToolCallArguments(raw: string): Record<string, unknown> {
+export function parseToolCallArguments(raw: string): JsonObject {
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
+      return parsed as JsonObject;
     }
     return { value: parsed };
   } catch {
