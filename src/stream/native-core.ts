@@ -568,6 +568,7 @@ async function handleCursorNativeRequest(
         setLastStreamEvent("active_bridge_history_mismatch");
       }
       if (activeBridge.bridge.alive && historyMatches) {
+        activeBridge.bridge.ref?.();
         handleNativeToolResultResume(
           activeBridge,
           toolResults,
