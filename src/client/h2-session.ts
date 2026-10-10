@@ -98,6 +98,8 @@ export type H2Session = Pick<http2.ClientHttp2Session, "request" | "on" | "close
   readonly destroyed: boolean;
   readonly closed: boolean;
   ping?(callback: (err: Error | null) => void): void;
+  ref?(): void;
+  unref?(): void;
 };
 
 /** The slice of `http2.ClientHttp2Stream` this module depends on. */
@@ -280,6 +282,8 @@ export function createBridgeHandleForSession(
       }
       currentStream = null;
       if (persistent) {
+        // Idle until the next openStream(), so it must not keep the process alive.
+        session.unref?.();
         deliverStreamDone();
         return;
       }
@@ -348,6 +352,7 @@ export function createBridgeHandleForSession(
       finalizeExit(1);
       return;
     }
+    session.ref?.();
     const stream = session.request(
       buildRequestHeaders(rpcPath, unary, accessToken),
     ) as unknown as H2Stream;

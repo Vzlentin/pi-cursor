@@ -46,6 +46,8 @@ function sessionHarness(options: { persistent?: boolean; unary?: boolean } = {})
     destroy: vi.fn(() => {
       session.destroyed = true;
     }),
+    ref: vi.fn(),
+    unref: vi.fn(),
     request: vi.fn((headers: Record<string, unknown>) => {
       requestHeaders.push(headers);
       const s = fakeStream();
@@ -143,10 +145,12 @@ describe("in-process h2 session bridge", () => {
     streams[0]!.emit("end");
     expect(done).toHaveBeenCalledTimes(1);
     expect(bridge.alive).toBe(true);
+    expect(session.unref).toHaveBeenCalledTimes(1);
 
     bridge.openStream!("token-2");
 
     expect(session.request).toHaveBeenCalledTimes(2);
+    expect(session.ref).toHaveBeenCalledTimes(2);
     expect(requestHeaders[1]!.authorization).toBe("Bearer token-2");
     expect(streams).toHaveLength(2);
   });
