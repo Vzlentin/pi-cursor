@@ -136,6 +136,7 @@ import {
   removeActiveBridge,
   setActiveBridge,
   startBridge,
+  takeActiveBridge,
 } from "./bridge-session.js";
 export { setBridgeFactoryForTests } from "./bridge-session.js";
 import {
@@ -544,7 +545,7 @@ async function handleCursorNativeRequest(
       process.env.PI_CURSOR_RESUME_IDLE_TIMEOUT_MS,
     );
     if (activeBridge) {
-      removeActiveBridge(bridgeKey);
+      takeActiveBridge(bridgeKey);
       // Without a Pi session id the bridge key is only a hash of the opening user message, so two
       // conversations that start alike land on the same key. Resuming the wrong bridge would splice
       // one conversation's tool results into another; the history fingerprint is what tells them
@@ -568,7 +569,6 @@ async function handleCursorNativeRequest(
         setLastStreamEvent("active_bridge_history_mismatch");
       }
       if (activeBridge.bridge.alive && historyMatches) {
-        activeBridge.bridge.ref?.();
         handleNativeToolResultResume(
           activeBridge,
           toolResults,

@@ -55,6 +55,12 @@ export function removeActiveBridge(bridgeKey: string): void {
   activeBridges.delete(bridgeKey);
 }
 
+/** Take a paused bridge out of the registry to serve the request that answers its tools. */
+export function takeActiveBridge(bridgeKey: string): void {
+  activeBridges.get(bridgeKey)?.bridge.ref?.();
+  removeActiveBridge(bridgeKey);
+}
+
 export const idleBridges = new Map<
   string,
   { bridge: BridgeHandle; idleTimer: ReturnType<typeof setTimeout> }
@@ -174,7 +180,7 @@ export function startBridge(
   }
   // 5s interval matches Cursor CLI liveness; also slides the parked-bridge TTL so
   // multi-round tool chains are not killed by the original park timestamp.
-  // Unref'd: an open stream refs the HTTP/2 session, which keeps the process alive.
+  // Unref'd: the session's ref state decides process lifetime. Paused and parked bridges are unref'd.
   const heartbeatTimer = setInterval(() => {
     bridge.write(makeHeartbeatBytes());
     if (options?.bridgeKey) touchActiveBridge(options.bridgeKey);
