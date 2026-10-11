@@ -55,6 +55,12 @@ export function removeActiveBridge(bridgeKey: string): void {
   activeBridges.delete(bridgeKey);
 }
 
+/** Take a paused bridge out of the registry. It may keep the process alive again. */
+export function takeActiveBridge(bridgeKey: string): void {
+  activeBridges.get(bridgeKey)?.bridge.ref?.();
+  removeActiveBridge(bridgeKey);
+}
+
 export const idleBridges = new Map<
   string,
   { bridge: BridgeHandle; idleTimer: ReturnType<typeof setTimeout> }
