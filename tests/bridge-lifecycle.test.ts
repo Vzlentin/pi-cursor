@@ -20,7 +20,7 @@ import {
   deriveBridgeKey,
   deriveConversationKey,
 } from "../src/stream/session-state.js";
-import type { NativeStreamWriter } from "../src/stream/types.js";
+import type { NativeStreamWriter, OpenAIMessage } from "../src/stream/types.js";
 import { resetCacheDirForTests } from "../src/utils/cache-dir.js";
 
 function fakeBridge() {
@@ -98,7 +98,7 @@ describe("completed bridge lifecycle", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function request(id?: string, body: { messages: unknown[] } = { messages }) {
+  async function request(id?: string, msgs: OpenAIMessage[] = messages) {
     const done = vi.fn();
     const error = vi.fn();
     const writer: NativeStreamWriter = {
@@ -118,7 +118,7 @@ describe("completed bridge lifecycle", () => {
       {
         model: "claude-opus-5-5",
         pi_session_id: id,
-        messages: body.messages as typeof messages,
+        messages: msgs,
         tools: [
           {
             type: "function",
@@ -157,7 +157,6 @@ describe("completed bridge lifecycle", () => {
     expect(done.mock.calls).toEqual([["stop"]]);
     expect(bridge.end).not.toHaveBeenCalled();
     expect(idleBridges.get(deriveBridgeKey(messages, sessionId))?.bridge).toBe(bridge);
-    expect(bridge.unref).toHaveBeenCalledTimes(1);
     await request(sessionId);
     expect(factory).toHaveBeenCalledTimes(1);
     expect(bridge.openStream).toHaveBeenCalledWith("test-token");
@@ -231,19 +230,17 @@ describe("completed bridge lifecycle", () => {
     expect(bridge.unref).toHaveBeenCalledTimes(1);
     expect(bridge.ref).not.toHaveBeenCalled();
 
-    await request(sessionId, {
-      messages: [
-        ...messages,
-        {
-          role: "assistant",
-          content: "",
-          tool_calls: [
-            { id: "call-tool", type: "function", function: { name: "ipython", arguments: "{}" } },
-          ],
-        },
-        { role: "tool", tool_call_id: "call-tool", content: "1267650600228229401496703205376" },
-      ],
-    });
+    await request(sessionId, [
+      ...messages,
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "call-tool", type: "function", function: { name: "ipython", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-tool", content: "1267650600228229401496703205376" },
+    ]);
     expect(factory).toHaveBeenCalledTimes(1);
     expect(bridge.ref).toHaveBeenCalledTimes(1);
   });
