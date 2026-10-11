@@ -45,6 +45,10 @@ export interface BridgeHandle {
   openStream?(accessToken: string): void;
   /** Fires when a persistent bridge reports the current stream ended. */
   onStreamDone?(cb: () => void): void;
+  /** Let the connection keep the process alive again, after `unref()`. */
+  ref?(): void;
+  /** Stop the connection from keeping the process alive while it waits for the client. */
+  unref?(): void;
 }
 
 export type BridgeFactory = (options: SpawnBridgeOptions) => BridgeHandle;

@@ -20,7 +20,7 @@ import {
   deriveBridgeKey,
   deriveConversationKey,
 } from "../src/stream/session-state.js";
-import type { NativeStreamWriter } from "../src/stream/types.js";
+import type { NativeStreamWriter, OpenAIMessage } from "../src/stream/types.js";
 import { resetCacheDirForTests } from "../src/utils/cache-dir.js";
 
 function fakeBridge() {
@@ -33,6 +33,8 @@ function fakeBridge() {
     lastStderr: () => "",
     write: vi.fn(),
     openStream: vi.fn(),
+    ref: vi.fn(),
+    unref: vi.fn(),
     end: vi.fn(() => {
       bridge.alive = false;
       onClose(0);
@@ -96,7 +98,7 @@ describe("completed bridge lifecycle", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function request(id?: string) {
+  async function request(id?: string, msgs: OpenAIMessage[] = messages) {
     const done = vi.fn();
     const error = vi.fn();
     const writer: NativeStreamWriter = {
@@ -116,7 +118,7 @@ describe("completed bridge lifecycle", () => {
       {
         model: "claude-opus-5-5",
         pi_session_id: id,
-        messages,
+        messages: msgs,
         tools: [
           {
             type: "function",
@@ -189,6 +191,7 @@ describe("completed bridge lifecycle", () => {
       expect(done.mock.calls).toEqual([["toolUse"]]);
       expect(bridge.end).not.toHaveBeenCalled();
       expect(activeBridges.has(deriveBridgeKey(messages, id))).toBe(true);
+      expect(bridge.unref).toHaveBeenCalledTimes(1);
       bridge.finishStream();
       expect(bridge.end).toHaveBeenCalledTimes(1);
       expect(error).not.toHaveBeenCalled();
@@ -201,6 +204,46 @@ describe("completed bridge lifecycle", () => {
       ).toEqual([{ toolCallId: "call-tool", toolName: "ipython" }]);
     },
   );
+
+  it("refs a paused bridge again when Pi sends the tool results", async () => {
+    await request(sessionId);
+    const bridge = bridges[0]!;
+    bridge.receive({
+      case: "execServerMessage",
+      value: {
+        $typeName: "agent.v1.ExecServerMessage",
+        id: 1,
+        execId: "exec-tool",
+        message: {
+          case: "mcpArgs",
+          value: {
+            $typeName: "agent.v1.McpArgs",
+            name: "ipython",
+            toolName: "ipython",
+            providerIdentifier: "pi",
+            toolCallId: "call-tool",
+            args: {},
+          },
+        },
+      },
+    });
+    expect(bridge.unref).toHaveBeenCalledTimes(1);
+    expect(bridge.ref).not.toHaveBeenCalled();
+
+    await request(sessionId, [
+      ...messages,
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "call-tool", type: "function", function: { name: "ipython", arguments: "{}" } },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-tool", content: "1267650600228229401496703205376" },
+    ]);
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(bridge.ref).toHaveBeenCalledTimes(1);
+  });
 
   it("drains all idle bridges on shutdown, but not when navigating sessions", () => {
     const hooks = new Map<string, (event: never, ctx: ExtensionContext) => void>();

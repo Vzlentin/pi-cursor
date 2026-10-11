@@ -124,6 +124,9 @@ export function setActiveBridge(
   active: Omit<ActiveBridge, "toolTimeoutTimer">,
 ): void {
   clearActiveBridgeToolTimeout(activeBridges.get(bridgeKey));
+  // The turn waits for Pi's tool results. Pi's own work keeps the process alive while the tools
+  // run; if the run stops instead, this bridge must not keep it alive.
+  active.bridge.unref?.();
   const toolTimeoutTimer = armActiveBridgeTtl(bridgeKey, active);
   activeBridges.set(bridgeKey, { ...active, toolTimeoutTimer });
 }
@@ -167,13 +170,14 @@ export function startBridge(
     debugLog("bridge.start_run", { requestBytes });
     bridge.write(frameConnectMessage(requestBytes));
   }
-  // Keep heartbeats referenced so long tool pauses do not look idle to the process.
   // 5s interval matches Cursor CLI liveness; also slides the parked-bridge TTL so
   // multi-round tool chains are not killed by the original park timestamp.
+  // Unref'd: the HTTP/2 session's ref state decides process lifetime.
   const heartbeatTimer = setInterval(() => {
     bridge.write(makeHeartbeatBytes());
     if (options?.bridgeKey) touchActiveBridge(options.bridgeKey);
   }, 5_000);
+  heartbeatTimer.unref?.();
   return { bridge, heartbeatTimer };
 }
 

@@ -430,6 +430,12 @@ export function createBridgeHandleForSession(
     end() {
       safeEnd();
     },
+    ref() {
+      session.ref?.();
+    },
+    unref() {
+      session.unref?.();
+    },
     onData(cb: (chunk: Buffer) => void) {
       cbs.data = cb;
       while (queuedData.length > 0 && !exited) {
@@ -553,6 +559,12 @@ function createProxiedBridge(
     end() {
       ended = true;
       inner?.end();
+    },
+    ref() {
+      inner?.ref?.();
+    },
+    unref() {
+      inner?.unref?.();
     },
     onData(cb) {
       onDataCb = cb;
