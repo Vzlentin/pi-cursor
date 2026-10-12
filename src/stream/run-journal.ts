@@ -23,7 +23,7 @@ import { join as pathJoin } from "node:path";
 
 import { getCacheDir } from "../utils/cache-dir.js";
 import { debugLog } from "./debug-log.js";
-import { MAX_ACTIVE_BLOB_ENTRIES, MAX_INDIVIDUAL_BLOB_BYTES } from "./tuning.js";
+import { MAX_INDIVIDUAL_BLOB_BYTES } from "./tuning.js";
 import type { StoredConversation } from "./types.js";
 
 const JOURNAL_VERSION = 1 as const;
@@ -155,8 +155,8 @@ function encodeBlob(data: Uint8Array): string {
  *
  * A checkpoint's `turns` are blob *references*, so any blob left out here is a
  * turn that comes back blank on the next launch. The live store is already
- * bounded (MAX_ACTIVE_BLOB_ENTRIES / MAX_CONVERSATION_BLOB_BYTES), so the
- * common case fits and `omitted` stays zero.
+ * bounded by MAX_CONVERSATION_BLOB_BYTES, so the common case fits and
+ * `omitted` stays zero.
  */
 function encodeBlobs(
   blobStore: Map<string, Uint8Array>,
@@ -172,7 +172,7 @@ function encodeBlobs(
     const encoded = encodeBlob(data);
     // `id.length + encoded.length` under-counts the JSON punctuation around each
     // entry; the slack constant covers that and the rest of the record.
-    if (kept.length >= MAX_ACTIVE_BLOB_ENTRIES || usedChars + encoded.length > budgetChars) {
+    if (usedChars + encoded.length > budgetChars) {
       omitted = i + 1;
       break;
     }
@@ -190,7 +190,7 @@ function decodeBlobs(entries: JournalBlobEntry[] | undefined): {
   const map = new Map<string, Uint8Array>();
   if (!Array.isArray(entries)) return { map, skipped: 0 };
   let skipped = 0;
-  for (const entry of entries.slice(0, MAX_ACTIVE_BLOB_ENTRIES)) {
+  for (const entry of entries) {
     try {
       if (
         !entry ||
@@ -213,7 +213,7 @@ function decodeBlobs(entries: JournalBlobEntry[] | undefined): {
       skipped += 1;
     }
   }
-  return { map, skipped: skipped + Math.max(0, entries.length - MAX_ACTIVE_BLOB_ENTRIES) };
+  return { map, skipped };
 }
 
 export function serializeConversationJournal(

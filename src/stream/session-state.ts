@@ -36,7 +36,6 @@ import {
 } from "./run-journal.js";
 import {
   CONVERSATION_TTL_MS,
-  MAX_ACTIVE_BLOB_ENTRIES,
   MAX_CHECKPOINT_BYTES,
   MAX_CONVERSATION_BLOB_BYTES,
 } from "./tuning.js";
@@ -236,17 +235,15 @@ export function discardStaleCheckpointIfNeeded(
 export function trimBlobStore(
   store: Map<string, Uint8Array>,
   maxBytes = MAX_CONVERSATION_BLOB_BYTES,
-  maxEntries = Number.POSITIVE_INFINITY,
 ): { removed: number; totalBytes: number } {
   let totalBytes = 0;
   for (const value of store.values()) totalBytes += value.byteLength;
-  const withinBudget = () => totalBytes <= maxBytes && store.size <= maxEntries;
-  if (withinBudget()) return { removed: 0, totalBytes };
+  if (totalBytes <= maxBytes) return { removed: 0, totalBytes };
 
   let removed = 0;
   // Map iteration order is insertion order — drop oldest blobs first.
   for (const key of store.keys()) {
-    if (withinBudget()) break;
+    if (totalBytes <= maxBytes) break;
     const value = store.get(key);
     if (!value) continue;
     totalBytes -= value.byteLength;
@@ -269,8 +266,8 @@ function clearCheckpointBytesOnly(stored: StoredConversation): void {
 }
 
 /**
- * Merge a stream's blobs into the retained per-conversation store, trimming to the byte and entry
- * bounds. Returns how many blobs the trim evicted, which decides whether a checkpoint may be kept:
+ * Merge a stream's blobs into the retained per-conversation store, trimming to the byte bound.
+ * Returns how many blobs the trim evicted, which decides whether a checkpoint may be kept:
  * see the eviction note below.
  */
 export function mergeBlobStore(
@@ -285,18 +282,13 @@ export function mergeBlobStore(
     stored.blobStore.delete(k);
     stored.blobStore.set(k, v);
   }
-  const trimmed = trimBlobStore(
-    stored.blobStore,
-    MAX_CONVERSATION_BLOB_BYTES,
-    MAX_ACTIVE_BLOB_ENTRIES,
-  );
+  const trimmed = trimBlobStore(stored.blobStore, MAX_CONVERSATION_BLOB_BYTES);
   if (trimmed.removed > 0) {
     debugLog("conversation.blob_store_trimmed", {
       removed: trimmed.removed,
       totalBytes: trimmed.totalBytes,
       entries: stored.blobStore.size,
       maxBytes: MAX_CONVERSATION_BLOB_BYTES,
-      maxEntries: MAX_ACTIVE_BLOB_ENTRIES,
     });
     // Cursor answers a request for an evicted blob with an empty result rather than an error, so a
     // checkpoint that outlived its blobs replays with those turns silently blank. Drop it and take

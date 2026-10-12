@@ -79,7 +79,6 @@ import { stripCursorMcpToolName } from "./root-prompt.js";
 import {
   interactionUpdateProgress,
   MAX_ACTIVE_BLOB_BYTES,
-  MAX_ACTIVE_BLOB_ENTRIES,
   MAX_INDIVIDUAL_BLOB_BYTES,
   type StreamProgress,
 } from "./tuning.js";
@@ -347,17 +346,12 @@ function handleKvMessage(
       throw new Error(`Cursor blob store exceeds the ${MAX_ACTIVE_BLOB_BYTES} byte limit`);
     }
     if (!blobStore.has(blobIdKey)) {
-      const evicted = trimBlobStore(
-        blobStore,
-        MAX_ACTIVE_BLOB_BYTES - blobData.byteLength,
-        MAX_ACTIVE_BLOB_ENTRIES - 1,
-      );
+      const evicted = trimBlobStore(blobStore, MAX_ACTIVE_BLOB_BYTES - blobData.byteLength);
       if (evicted.removed > 0) {
         debugLog("kv.blob_store_evicted", {
           removed: evicted.removed,
           totalBytes: evicted.totalBytes,
           entries: blobStore.size,
-          maxEntries: MAX_ACTIVE_BLOB_ENTRIES,
         });
       }
     }

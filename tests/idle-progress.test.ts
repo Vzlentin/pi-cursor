@@ -27,8 +27,6 @@ import {
   resolveStreamIdleMaxRetries,
   resolveStreamIdleTimeoutMs,
 } from "../src/stream/native-core.js";
-import { MAX_ACTIVE_BLOB_ENTRIES } from "../src/stream/tuning.js";
-
 afterEach(() => {
   __testInternals.conversationStates.clear();
 });
@@ -121,9 +119,9 @@ describe("idle progress classification", () => {
     expect((control.message.value as ExecClientThrow).id).toBe(7);
   });
 
-  it("evicts the oldest active blob instead of failing the write at the entry bound", () => {
+  it("keeps the blobs a rebuild references when Cursor writes past 512 entries", () => {
     const store = new Map<string, Uint8Array>();
-    for (let i = 0; i < MAX_ACTIVE_BLOB_ENTRIES; i++) {
+    for (let i = 0; i < 2000; i++) {
       store.set(i.toString(16).padStart(4, "0"), new Uint8Array([1]));
     }
     const message = create(AgentServerMessageSchema, {
@@ -160,8 +158,8 @@ describe("idle progress classification", () => {
       ),
     ).toBe("work");
     expect(frames).toHaveLength(1);
-    expect(store.size).toBe(MAX_ACTIVE_BLOB_ENTRIES);
-    expect(store.has("0000")).toBe(false);
+    expect(store.size).toBe(2001);
+    expect(store.has("0000")).toBe(true);
     expect(store.has("ffff")).toBe(true);
   });
 

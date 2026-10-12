@@ -7,7 +7,6 @@
  */
 import { describe, expect, it } from "vitest";
 import { __testInternals } from "../src/stream/run-journal.js";
-import { MAX_ACTIVE_BLOB_ENTRIES } from "../src/stream/tuning.js";
 import type { StoredConversation } from "../src/stream/types.js";
 
 const { serializeConversationJournal, deserializeConversationJournal } = __testInternals;
@@ -55,10 +54,13 @@ describe("journal blob persistence", () => {
     expect(restored.checkpointTurnCount).toBe(4);
   });
 
-  it("never persists more blobs than the live store is allowed to hold", () => {
-    const record = serializeConversationJournal("k", stored(blobs(MAX_ACTIVE_BLOB_ENTRIES + 50)));
-    expect(record.blobs.length).toBeLessThanOrEqual(MAX_ACTIVE_BLOB_ENTRIES);
-    expect(record.blobsOmitted).toBeGreaterThan(0);
+  it("keeps the checkpoint of a store past the old 512-entry cap", () => {
+    const record = serializeConversationJournal("k", stored(blobs(2000), new Uint8Array([9])));
+    const restored = deserializeConversationJournal(record)!;
+
+    expect(record.blobsOmitted).toBeUndefined();
+    expect(restored.blobStore.size).toBe(2000);
+    expect(restored.checkpoint).toEqual(new Uint8Array([9]));
   });
 
   it("drops the checkpoint rather than resuming with blank history", () => {

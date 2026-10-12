@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Long sessions no longer fail every turn with `Cursor asked for blob … that is not in the local store (512 entries)`.** A rebuild without a checkpoint references every blob of Pi's history at once, and a session with a few hundred tool calls needs thousands. The 512-entry bound evicted part of that set while the turn was starting, Cursor asked for an evicted blob, and every retry rebuilt the same set and hit the same miss. The live store, the retained store and the journal are now bounded by bytes only. This also keeps a long session's checkpoint across a restart, where the journal used to drop it at 512 blobs.
+
 ## [1.4.38] - 2026-09-23
 
 ### Fixed

@@ -11,7 +11,7 @@ import {
   mergeBlobStore,
   trimBlobStore,
 } from "../src/stream/session-state.js";
-import { MAX_ACTIVE_BLOB_ENTRIES } from "../src/stream/tuning.js";
+import { MAX_CONVERSATION_BLOB_BYTES } from "../src/stream/tuning.js";
 import type { OpenAIMessage, ParsedTurn, StoredConversation } from "../src/stream/types.js";
 
 const PNG_HEADER = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -158,38 +158,44 @@ describe("blob store eviction order", () => {
     expect(stored.blobStore.has("turn-1")).toBe(false);
   });
 
-  it("evicts oldest entries to stay inside the entry bound", () => {
-    const store = new Map<string, Uint8Array>();
-    for (let i = 0; i < 5; i++) store.set(`b${i}`, new Uint8Array([i]));
-    const trimmed = trimBlobStore(store, 1024, 3);
-    expect(trimmed.removed).toBe(2);
-    expect(store.size).toBe(3);
-    expect(store.has("b0")).toBe(false);
-    expect(store.has("b1")).toBe(false);
-    expect(store.has("b4")).toBe(true);
+  it("keeps a rebuild's thousands of small blobs and the checkpoint that references them", () => {
+    const stored = storedConversation();
+    const blobStore = new Map<string, Uint8Array>();
+    for (let i = 0; i < 2000; i++) blobStore.set(`blob-${i}`, new Uint8Array(2048));
+
+    const checkpoint = new Uint8Array([1, 2, 3, 4]);
+    commitStoredCheckpoint(stored, checkpoint, blobStore, [], { userText: "go", steps: [] });
+
+    expect(stored.blobStore.size).toBe(2000);
+    expect(stored.checkpoint).toBe(checkpoint);
   });
 });
+
+/** Two blobs that together pass the byte bound, so a merge must evict the older one. */
+function overByteBound(): Map<string, Uint8Array> {
+  const half = new Uint8Array(MAX_CONVERSATION_BLOB_BYTES / 2 + 1);
+  return new Map([
+    ["blob-0", half],
+    ["blob-1", half],
+  ]);
+}
 
 /**
  * Restoring from the journal already refuses to pair a checkpoint with an incomplete blob set
  * (`journal.checkpoint_dropped_incomplete_blobs`), because Cursor answers a missing blob with an
  * empty result and the turn comes back blank rather than failing. Committing a checkpoint has to
- * hold the same line: the entry bound evicts oldest-first on a conversation that outgrows it, and
+ * hold the same line: the byte bound evicts oldest-first on a conversation that outgrows it, and
  * keeping the checkpoint anyway hands Cursor references we can no longer serve.
  */
 describe("checkpoint durability across blob eviction", () => {
   const turn: ParsedTurn = { userText: "do the thing", steps: [] };
 
-  it("drops a checkpoint whose blobs the entry bound just evicted", () => {
+  it("drops a checkpoint whose blobs the byte bound just evicted", () => {
     const stored = storedConversation();
-    const blobStore = new Map<string, Uint8Array>();
-    for (let i = 0; i <= MAX_ACTIVE_BLOB_ENTRIES; i++) {
-      blobStore.set(`blob-${i}`, new Uint8Array(8).fill(i % 256));
-    }
 
-    commitStoredCheckpoint(stored, new Uint8Array([1, 2, 3, 4]), blobStore, [], turn);
+    commitStoredCheckpoint(stored, new Uint8Array([1, 2, 3, 4]), overByteBound(), [], turn);
 
-    expect(stored.blobStore.size).toBe(MAX_ACTIVE_BLOB_ENTRIES);
+    expect(stored.blobStore.size).toBe(1);
     expect(stored.blobStore.has("blob-0")).toBe(false);
     expect(stored.checkpoint).toBeNull();
     expect(stored.checkpointTurnCount).toBeUndefined();
@@ -213,12 +219,7 @@ describe("checkpoint durability across blob eviction", () => {
       checkpointTurnCount: 3,
       checkpointHistoryFingerprint: "fp-3",
     });
-    const blobStore = new Map<string, Uint8Array>();
-    for (let i = 0; i <= MAX_ACTIVE_BLOB_ENTRIES; i++) {
-      blobStore.set(`blob-${i}`, new Uint8Array(8).fill(i % 256));
-    }
-
-    const { evicted } = mergeBlobStore(stored, blobStore);
+    const { evicted } = mergeBlobStore(stored, overByteBound());
 
     expect(evicted).toBeGreaterThan(0);
     expect(stored.checkpoint).toBeNull();
