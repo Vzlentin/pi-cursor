@@ -9,7 +9,7 @@ if (existsSync(join(root, "dist/index.js"))) process.exit(0);
 const win = process.platform === "win32";
 const tsup = join(root, "node_modules", ".bin", win ? "tsup.cmd" : "tsup");
 const useLocal = existsSync(tsup);
-const result = spawnSync(useLocal ? tsup : win ? "npx.cmd" : "npx", useLocal ? [] : ["--yes", "tsup"], {
+const result = spawnSync(useLocal ? tsup : win ? "npx.cmd" : "npx", useLocal ? [] : ["--yes", "-p", "tsup@^8.5.0", "-p", "typescript@^6.0.3", "tsup"], {
   stdio: "inherit",
   cwd: root,
   shell: win,

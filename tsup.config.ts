@@ -1,6 +1,6 @@
-import { defineConfig } from "tsup";
+import type { Options } from "tsup";
 
-export default defineConfig({
+export default {
   entry: ["src/index.ts"],
   format: ["esm"],
   platform: "node",
@@ -12,4 +12,4 @@ export default defineConfig({
   splitting: false,
   treeshake: true,
   external: ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@bufbuild/protobuf"],
-});
+} satisfies Options;
